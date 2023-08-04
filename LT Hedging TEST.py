@@ -15,6 +15,7 @@ warnings.filterwarnings('ignore')
 import pyodbc
 import matplotlib.pyplot as plt
 from datetime import date, timedelta
+import seaborn as sns
 #%% EMPS query
 
 def fetch_emps(
@@ -191,17 +192,17 @@ inputs.set_index('Year', inplace=True)
 
 # Main df
 years = list(range(2022, 2038))
-financial_metrics = ['Achieved electricity price (€/MWh)', 'Electricity generation (TWh)', 'Electricity revenue',
-                     'Other revenue', 'Generation', 'Consumer Solutions', 'City Solutions', 'Others and eliminations',
-                     'Total revenue', 'EBITDA', 'Generation E', 'Consumer Solutions E', 'City Solutions E', 'Others and eliminations E',
+financial_metrics = ['Price (€/MWh)', 'Electricity generation (TWh)', 'Electricity revenue',
+                     'Other revenue', 'Generation', 'CoS', 'CiS', 'Others',
+                     'Total revenue', 'EBITDA', 'Generation E', 'CoS E', 'CiS E', 'Others E',
                      'Tangible assets', 'Depreciation and amortization', 'Financial net debt', 'Interest bearing debt',
                      'Interest rate', 'Net financial items', 'EBIT', 'Taxes', 'Net income', 'FFO', 'Capex', 'Maintenance',
                      'Growth', 'FCF', 'Dividend per share (€)', 'Shares', 'Dividends', 'Debt amortization', 'ND/EBITDA', 'FFO/ND']
 df = pd.DataFrame(index=years, columns=financial_metrics)
 
 #%%
-print(df.dtypes)
 df = df.astype(float)
+print(df.dtypes)
 
 # Filling the 2022 info as it is
 df.loc[2022, 'Tangible assets'] = 10179
@@ -209,12 +210,22 @@ df.loc[2022, 'Depreciation and amortization'] = -566
 df.loc[2022, 'Financial net debt'] = -794
 df.loc[2022, 'Interest bearing debt'] = 6123
 df.loc[2022, 'Dividend per share (€)'] = 0.91
-df.loc[2022, 'Consumer Solutions'] = 4578
-df.loc[2022, 'City Solutions'] = 1282
-df['Others and eliminations'] = -1741
+df.loc[2022, 'CoS'] = 4578
+df.loc[2022, 'CiS'] = 1282
+df['Others'] = -1741
 df.loc[2022, 'Net financial items'] = -214
 df.loc[2022, 'Taxes'] = -249
 df.loc[2022, 'EBIT'] = 1611
+df.loc[2022, 'Maintenance'] = -425
+df['Generation'] = 1085
+df.loc[2022, 'Debt amortization'] = 321
+df.loc[2022, 'Net income'] = 996
+df.loc[2022, 'FFO'] = 1562
+df.loc[2022, 'FCF'] = 1137
+df.loc[2022, 'Dividends'] = 816
+df.loc[2022, 'ND/EBITDA'] = 0.39
+df.loc[2022, 'FFO/ND'] = 1.97
+
 
 # More basic inputs
 df['Shares'] = 897
@@ -226,75 +237,59 @@ df.loc[2028, 'Growth'] = -2000
 df['Interest rate'] = inputs.loc[:, 'InterestRate'] # Check these
 df['Inflation'] = inputs.loc[:, 'Inflation']
 
+#%%
 # Choose scenario. Figure out something more sophisticated later on.
-scen = emps.iloc[:, 44] # 0 refers to scenario where prices on average are the lowest
-df['Achieved electricity price (€/MWh)'] = scen 
+scen = emps.iloc[:, 0] # 0 refers to scenario where prices on average are the lowest
+df['Price (€/MWh)'] = scen 
 prodplans = [42.9, 44.3, 45.5, 45.2, 43.9, 45.2] #Apollo plans from B&W
-df.loc[df.index[1:7], 'Electricity generation (TWh)'] = prodplans
+df.loc[df.index[0:6], 'Electricity generation (TWh)'] = prodplans
 realprices = [59.9, 50.8, 46.35, 42.84] #Actual prices from B&W
-df.loc[df.index[0:4], 'Achieved electricity price (€/MWh)'] = realprices
+df.loc[df.index[0:4], 'Price (€/MWh)'] = realprices
 
 # CAPEX: Calculate the new value based on the previous year's value and inflation
-df.loc[2022, 'Maintenance'] = -425
-
 for i in range(1, len(df)):
-    df.iloc[i, df.columns.get_loc('Maintenance')] = df.iloc[i-1]['Maintenance'] * (1 + df.iloc[i-1]['Inflation']) + (df.iloc[i-1]['Growth'] * 0.032)
-    
-df['Capex'] = df['Maintenance'] + df['Growth']
+    df.iloc[i, df.columns.get_loc('Maintenance')] = df.iloc[i-1]['Maintenance'] * (1 + df.iloc[i-1]['Inflation']) + (df.iloc[i-1]['Growth'] * 0.032)    
+    df['Capex'] = df['Maintenance'] + df['Growth']
 
 # Generation: First 5 years based on production plans
-df.loc[2023:2027, 'Electricity generation (TWh)'] = [44.3, 45.5, 45.2, 43.9, 45.2]
-df['Electricity revenue'] = df['Achieved electricity price (€/MWh)'] * df['Electricity generation (TWh)']
+df.loc[2024:2028, 'Electricity generation (TWh)'] = [44.3, 45.5, 45.2, 43.9, 45.2]
+df['Electricity revenue'] = df['Price (€/MWh)'] * df['Electricity generation (TWh)']
 
 # Generation from 2028 onwards and then revenue
 for year in range(2028, 2038):
     prev_year = year - 1
     df.loc[year, 'Electricity generation (TWh)'] = df.loc[prev_year, 'Electricity generation (TWh)'] - df.loc[prev_year, 'Growth'] / 385
-
-df['Electricity revenue'] = df['Electricity generation (TWh)'] * df['Achieved electricity price (€/MWh)']
+    df['Electricity revenue'] = df['Electricity generation (TWh)'] * df['Price (€/MWh)']
 
 # Divisions
-df['Generation'] = 1085
-
 for year in range(2023, 2038):
-    df.loc[year, 'City Solutions'] = df.loc[year - 1, 'City Solutions'] * (1 + df.loc[year - 1, 'Inflation'])
-    df.loc[year, 'Consumer Solutions'] = df.loc[year - 1, 'Consumer Solutions'] * (1 + df.loc[year - 1, 'Inflation'])
-
-df['Other revenue'] = df.iloc[:, 5:8].sum(axis=1)
-df['Total revenue'] = df['Electricity revenue'] + df['Other revenue']
+    df.loc[year, 'CiS'] = df.loc[year - 1, 'CiS'] * (1 + df.loc[year - 1, 'Inflation'])
+    df.loc[year, 'CoS'] = df.loc[year - 1, 'CoS'] * (1 + df.loc[year - 1, 'Inflation'])
+    df['Other revenue'] = df.iloc[:, 5:8].sum(axis=1)
+    df['Total revenue'] = df['Electricity revenue'] + df['Other revenue']
 
 
 # EBITDAs
 df.loc[2022, 'Generation E'] = 1765
-df.loc[2022, 'Consumer Solutions E'] = 173
-df.loc[2022, 'City Solutions E'] = 177
-df.loc[2022, 'Others and eliminations E'] = -90
+df.loc[2022, 'CoS E'] = 173
+df.loc[2022, 'CiS E'] = 177
+df.loc[2022, 'Others E'] = -90
 
 for year in range(2023, 2038):
-    df.loc[year, 'Consumer Solutions E'] = df.loc[year, 'Consumer Solutions'] * margins.loc[year, 'Consumer Solutions']
-    df.loc[year, 'City Solutions E'] = df.loc[year, 'City Solutions'] * margins.loc[year, 'City Solutions']
-    df.loc[year, 'Others and eliminations E'] = df.loc[year, 'Others and eliminations'] * margins.loc[year, 'Others and eliminations']
+    df.loc[year, 'CoS E'] = df.loc[year, 'CoS'] * margins.loc[year, 'Consumer Solutions']
+    df.loc[year, 'CiS E'] = df.loc[year, 'CiS'] * margins.loc[year, 'City Solutions']
+    df.loc[year, 'Others E'] = df.loc[year, 'Others'] * margins.loc[year, 'Others and eliminations']
     df.loc[year, 'Generation E'] = (df.loc[year, 'Generation'] + df.loc[year, 'Electricity revenue']) * margins.loc[year, 'Generation']
-    df['EBITDA'] = df.loc[:,'Generation E':'Others and eliminations E'].sum(axis=1)
+    df['EBITDA'] = df.loc[:,'Generation E':'Others E'].sum(axis=1)
 
 
 # Tangible assets in order to calculate other ratios for future years
 for year in range(2023, 2038):
     prev_year = year - 1
-
     # Calculate 'Tangible assets' for the current year
     df.loc[year, 'Tangible assets'] = df.loc[prev_year, 'Tangible assets'] + df.loc[prev_year, 'Depreciation and amortization'] - df.loc[prev_year, 'Capex']
-
     # Calculate 'Depreciation and amortization' for the current year
     df.loc[year, 'Depreciation and amortization'] = df.loc[year, 'Tangible assets'] * -0.07
-
-df.loc[2022, 'Debt amortization'] = 321
-df.loc[2022, 'Net income'] = 996
-df.loc[2022, 'FFO'] = 1562
-df.loc[2022, 'FCF'] = 1137
-df.loc[2022, 'Dividends'] = 816
-df.loc[2022, 'ND/EBITDA'] = 0.39
-df.loc[2022, 'FFO/ND'] = 1.97
 
 
 for year in range(2023, 2038):
@@ -318,42 +313,128 @@ for year in range(2023, 2038):
     
 
 #%%
-
-# Define the function to calculate the ratios
-def financials(scenario_prices, model_df):
-    results = {}
-
-    years = list(range(2023, 2038))
+# Function that tests EMPS scenarios and saves results to a new df
+def calculate_ratios(scenarios, model):
+    results = {'Scenario': [], 'Year': [], 'Dividend per share (€)': [], 'ND/EBITDA': [], 'FFO/ND': []}
 
     # Iterate over scenarios
-    for scenario in scenario_prices.columns:
-        temp_df = model_df.copy()
-        temp_df['Price'] = scenario_prices[scenario].values
+    for scenario in scenarios.columns:
+        scenario_prices= scenarios[scenario]
 
-        div_ratios, ndebitda_ratios, ffond_ratios = [], [], []
+        model_df = model.copy()
 
-        for year in years:
-            if year in temp_df.index:
-                div_ratios.append(temp_df.loc[year, 'Dividend per share (€)'])
-                ndebitda_ratios.append(temp_df.loc[year, 'ND/EBITDA'])
-                ffond_ratios.append(temp_df.loc[year, 'FFO/ND'])
-            else:
-                div_ratios.append(None)
-                ndebitda_ratios.append(None)
-                ffond_ratios.append(None)
-        results[scenario] = {
-            'Dividend': div_ratios,
-            'ND/EBITDA': ndebitda_ratios,
-            'FFO/ND': ffond_ratios
-        }
+        for year in model.index:
+            if year < 2023:
+                continue
 
-    return results
+            if year in model.index and year in scenario_prices.index:
+                prev_year = year - 1
+                taxrate = 0.2
+                div_payout = 0.75
+                model_df['Price (€/MWh)'] = scenario_prices
+                model_df.loc[2024:2028, 'Electricity generation (TWh)'] = [44.3, 45.5, 45.2, 43.9, 45.2]
+                model_df['Electricity revenue'] = model_df['Price (€/MWh)'] * model_df['Electricity generation (TWh)']
+                model_df.loc[year, 'Electricity generation (TWh)'] = model_df.loc[prev_year, 'Electricity generation (TWh)'] - model_df.loc[prev_year, 'Growth'] / 385
+                model_df['Electricity revenue'] = model_df['Electricity generation (TWh)'] * model_df['Price (€/MWh)']
+                model_df.loc[year, 'CiS'] = model_df.loc[year - 1, 'CiS'] * (1 + model_df.loc[year - 1, 'Inflation'])
+                model_df.loc[year, 'CoS'] = model_df.loc[year - 1, 'CoS'] * (1 + model_df.loc[year - 1, 'Inflation'])
+                model_df['Other revenue'] = model_df.iloc[:, 5:8].sum(axis=1)
+                model_df['Total revenue'] = model_df['Electricity revenue'] + model_df['Other revenue']
+                model_df.loc[year, 'CoS E'] = model_df.loc[year, 'CoS'] * margins.loc[year, 'Consumer Solutions']
+                model_df.loc[year, 'CiS E'] = model_df.loc[year, 'CiS'] * margins.loc[year, 'City Solutions']
+                model_df.loc[year, 'Others E'] = model_df.loc[year, 'Others'] * margins.loc[year, 'Others and eliminations']
+                model_df.loc[year, 'Generation E'] = (model_df.loc[year, 'Generation'] + model_df.loc[year, 'Electricity revenue']) * margins.loc[year, 'Generation']
+                model_df['EBITDA'] = model_df.loc[:, 'Generation E':'Others E'].sum(axis=1)
+                model_df.loc[year, 'Financial net debt'] = model_df.loc[prev_year, 'Financial net debt'] - model_df.loc[prev_year, 'Debt amortization']
+                model_df.loc[year, 'Interest bearing debt'] = model_df.loc[prev_year, 'Interest bearing debt'] - model_df.loc[prev_year, 'Debt amortization']
+                model_df.loc[year, 'Net financial items'] = -model_df.loc[year, 'Interest bearing debt'] * model_df.loc[year, 'Interest rate']
+                model_df.loc[year, 'EBIT'] = model_df.loc[year, 'EBITDA'] + model_df.loc[year, 'Depreciation and amortization'] + model_df.loc[year, 'Net financial items']
+                model_df.loc[year, 'Taxes'] = -model_df.loc[year, 'EBIT'] * taxrate
+                model_df.loc[year, 'Net income'] = model_df.loc[year, 'EBIT'] + model_df.loc[year, 'Taxes']
+                model_df.loc[year, 'FFO'] = model_df.loc[year, 'Net income'] - model_df.loc[year, 'Depreciation and amortization']
+                model_df.loc[year, 'FCF'] = model_df.loc[year, 'FFO'] + model_df.loc[year, 'Capex']
+                model_df.loc[year, 'Dividends'] = model_df.loc[year, 'Dividend per share (€)'] * model_df.loc[year, 'Shares']
+                model_df.loc[year, 'Debt amortization'] = model_df.loc[year, 'FCF'] - model_df.loc[year, 'Dividends']
+                model_df.loc[year, 'Dividends'] = max(model_df.loc[year, 'Net income'] * div_payout, 0)
+                model_df.loc[year, 'Debt amortization'] = model_df.loc[year, 'FCF'] - model_df.loc[year, 'Dividends']
+                model_df.loc[year, 'Dividend per share (€)'] = model_df.loc[year, 'Dividends'] / model_df.loc[year, 'Shares']
+                model_df.loc[year, 'ND/EBITDA'] = model_df.loc[year, 'Financial net debt'] / model_df.loc[year, 'EBITDA']
+                model_df.loc[year, 'FFO/ND'] = model_df.loc[year, 'FFO'] / model_df.loc[year, 'Financial net debt']
 
+                div = model_df.loc[year, 'Dividend per share (€)']
+                ndebitda = model_df.loc[year, 'ND/EBITDA']
+                ffond = model_df.loc[year, 'FFO/ND']
+                results['Scenario'].append(scenario)
+                results['Year'].append(year)
+                results['Dividend per share (€)'].append(div)
+                results['ND/EBITDA'].append(ndebitda)
+                results['FFO/ND'].append(ffond)
 
-results = financials(emps, df)
-results_df = pd.DataFrame.from_dict({(i,j): results[i][j]
-                           for i in results.keys()
-                           for j in results[i].keys()})
-results_df.index = pd.Index(range(2023, 2038), name='Year')
+    results_df = pd.DataFrame(results)
 
+    return results_df
+
+results_df = calculate_ratios(emps, df)
 print(results_df)
+
+
+#%%
+sns.set(style='whitegrid', context='talk')
+
+# ND/EBITDA ratio over time for each scenario
+plt.figure(figsize=(12, 8))
+sns.lineplot(data=results_df, x='Year', y='ND/EBITDA', hue='Scenario', marker='o', linewidth=2)
+#plt.legend().remove()
+
+plt.legend(title='Scenario', bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.title('ND/EBITDA Ratio Over Time for Each Scenario')
+plt.xlabel('Year')
+plt.ylabel('ND/EBITDA Ratio')
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+# Dividend per share over time for each scenario
+plt.figure(figsize=(12, 8))
+sns.lineplot(data=results_df, x='Year', y='Dividend per share (€)', hue='Scenario',
+             marker='o', linewidth=2)
+#plt.legend().remove()
+
+plt.legend(title='Scenario', bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.title('Dividend per Share Over Time for Each Scenario')
+plt.xlabel('Year')
+plt.ylabel('Dividend')
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
