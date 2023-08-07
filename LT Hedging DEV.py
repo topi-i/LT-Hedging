@@ -316,7 +316,7 @@ for year in range(2023, 2038):
 smfc = smfc.astype(float)
 print(smfc.dtypes)
 
-# Suojaamaton osuus EMPSiä ja suojat tehdään SMFC:llä!
+# Unhedged part is EMPS and hedge price is SMFC.
 
 inputs.loc[[2024, 2025, 2026], 'LtHr'] = [0.75, 0.7, 0.6]
 lt_hr = inputs['LtHr']; lt_hr = pd.DataFrame(lt_hr); lt_hr = lt_hr.drop(2022)
@@ -444,7 +444,7 @@ with pd.ExcelWriter('LT Hedging.xlsx') as writer:
     # Save the first DataFrame 'df' to the 'APP' sheet
     results_df.to_excel(writer, sheet_name='Results', index=True)
     # Save the second DataFrame 'emps' to the 'EMPS' sheet
-    emps.to_excel(writer, sheet_name='EMPS', index=True)  # Set index=False to exclude the index column
+    emps.to_excel(writer, sheet_name='EMPS', index=True)
     # Same to the third
     smfc.to_excel(writer, sheet_name='SMFC', index=True)
 
