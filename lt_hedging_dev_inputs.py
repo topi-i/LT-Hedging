@@ -5,25 +5,19 @@ Created on Tue Sep  5 19:31:01 2023
 @author: issaktop
 """
 
-
 import LilyTools as lt
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import date
-import numpy as np
-import warnings
-warnings.filterwarnings('ignore')
 import pyodbc
-import matplotlib.pyplot as plt
 from datetime import date, timedelta
 import seaborn as sns
 
 #%% EMPS 
-
 def fetch_emps(
-        fc_date = date.today() - timedelta(days=1),
+        fc_date = date(2024, 2, 13) + timedelta(days=1),
         del_start = date(date.today().year, date.today().month, 1),
-        del_end = date(date.today().year + 14, 12, 31)
+        del_end = date(date.today().year + 20, 12, 31)
         ):
     """
     Description:
@@ -45,10 +39,10 @@ def fetch_emps(
     print("Querying LT RiRe EMPS scenarios")
     
     dict_zones = {
-        'FI':'MT risk FI power',
-        'SE2':'MT risk SE2 power',
-        'SE3':'MT risk SE3 power',
-        'SYS':'MT risk SYS power'
+        'FI':'MT risk 77-21 FI power',
+        'SE2':'MT risk 77-21 SE2 power',
+        'SE3':'MT risk 77-21 SE3 power',
+        'SYS':'MT risk 77-21 SYS power'
         }
     
     emps = pd.DataFrame()
@@ -68,20 +62,17 @@ def fetch_emps(
         emps = pd.concat([emps,df_temp],axis=0)
     emps.columns = ['ValueDate','Variable','Value','Area']
     
-    # unify scenario labels
+    # Unify scenario labels
     emps.variable = emps.Variable.str[:4]
     # Aggregation columns
     emps['Delivery year'] = emps.ValueDate.dt.year
-    #emps['delqtr'] = "Q"+emps.ValueDate.dt.quarter.astype(str)+"-"+emps.ValueDate.dt.year.astype(str)
-    #emps['delmth'] = "M"+emps.ValueDate.dt.month.astype(str)+"-"+emps.ValueDate.dt.year.astype(str)
     return emps
 
-#%%S
-
+#%% SMFC
 def fetch_smfc(
-        fc_date = date.today(),
+        fc_date = date(2024, 2, 13),
         del_start = date(date.today().year, date.today().month, 1),
-        del_end = date(date.today().year + 14, 12, 31)
+        del_end = date(date.today().year + 20, 12, 31)
         ):
     print("Querying SMFCs")
     """
@@ -131,31 +122,41 @@ def fetch_smfc(
     return smfc
 
 
-#%%
+#%% Fetching EMPS and SMFC prices
 
-emps_original = fetch_emps()
-smfc_original = fetch_smfc()
+a_emps = fetch_emps()
+a_smfc = fetch_smfc()
 
-emps = emps_original.copy() 
-smfc = smfc_original.copy()
+emps = a_emps.copy()
+smfc = a_smfc.copy()
+hedgeprice = '-15 %'
 
-#%%
+#%% Modifying EMPS df
 
-def modify_emps(emps):
+def modify_emps(emps: pd.DataFrame(),
+                fi_weight: int,
+                sto_weight: int,
+                sun_weight: int,
+                discount_factor: int):
+    """
+    Calculates the weighted average of EMPS prices. Weights for each price area are given as inputs.
+    EMPS prices are also discoutned (discount_factor) to give more weigth to front year prices.
+
+    """
 # EMPS: Weights and transposing
     emps['Weight'] = 0
-    emps.loc[emps['Area'] == 'FI', 'Weight'] = 0.4
-    emps.loc[emps['Area'] == 'SE3', 'Weight'] = 0.4
-    emps.loc[emps['Area'] == 'SE2', 'Weight'] = 0.2
+    emps.loc[emps['Area'] == 'FI', 'Weight'] = fi_weight
+    emps.loc[emps['Area'] == 'SE3', 'Weight'] = sto_weight
+    emps.loc[emps['Area'] == 'SE2', 'Weight'] = sun_weight
     emps = emps[emps['Area'] != 'SYS']
     emps['Weighted Price'] = emps['Value'] * emps['Weight']
     emps = emps.groupby(['Variable', 'Delivery year'])['Weighted Price'].sum().unstack()
     emps = emps.T
     
     # EMPS: Discounting
-    years = list(range(2023, 2038))
+    years = list(range(2024, 2045))
     disc = pd.DataFrame(index=years)
-    disc['Discounter'] = 1.06
+    disc['Discounter'] = discount_factor
     disc['Discount factor'] = (1 / disc['Discounter'])**(disc.index - 2022)
     emps_temp = emps.multiply(disc['Discount factor'], axis=0)
     
@@ -168,52 +169,66 @@ def modify_emps(emps):
     emps = undiscounted_emps
     return emps
 
-#%%
+#%% Modifying SMFC df
 
-def modify_smfc(smfc):
+def modify_smfc(smfc: pd.DataFrame(),
+                weight_list: list):
+    """
+    Calculates the weighted average of SMFC prices. This is based on a 
+    list (order: FI, SE3, SE2)
+    """
 # SMFC: Transforming
     smfc = smfc.pivot_table(index='Delivery year', columns=['Area'], values='Value')
     smfc = smfc.reset_index()
-    
+    # Extending until 2044
+    last_year = smfc[smfc['Delivery year'] == 2037].iloc[0]
+    missing = pd.DataFrame([last_year] * 7)
+    missing['Delivery year'] = range(2038, 2045)
+    smfc = pd.concat([smfc, missing], ignore_index=True)
     # SMFC: Weighted price
-    weights = [0.4, 0.2, 0.4]
-    smfc[['FI', 'SE2', 'SE3']] = smfc[['FI', 'SE2', 'SE3']].apply(pd.to_numeric)
+    weights = weight_list
+    smfc[['FI', 'SE3', 'SE2']] = smfc[['FI', 'SE3', 'SE2']].apply(pd.to_numeric)
     smfc['Weighted Price'] = (smfc.iloc[:, 1:] * weights).sum(axis=1)
     smfc = smfc.astype(float)
     return smfc
 
-#%%
+#%% Importing inputs
 
-# Import margins from the excel
-margins = pd.read_excel(r'C:\Users\issaktop\OneDrive - Fortum\Documents\Python\ALL\LT Hedging\LT Hedging DEV.xlsx',
-                        sheet_name='Margins', index_col=0)
-margins = margins.T
-margins = margins.reset_index()
-margins = margins.rename(columns = {'index':'Year'})
+def import_inputs(excel_name:str):
+    """
+    Imports two sheets from input Excel-file. Imported sheets are the input template
+    and margins estimates.
+    """
+    
+    margins = pd.read_excel(excel_name, sheet_name='margins', index_col=0)
+    margins = margins.T
+    margins = margins.reset_index()
+    margins = margins.rename(columns = {'index':'Year'})
+    
+    df = pd.read_excel(excel_name, sheet_name='inputs')
+    df = df.astype(float)
+    
+    return margins, df
 
-
+# Setting initial LT HR and dividend payout ratio
 variables = {
-    'Year': range(2022, 2038),
+    'Year': range(2023, 2045),
     'DivPayout': 0.75,
     'LtHr': 0.1}
 
 inputs = pd.DataFrame(variables)
 inputs.set_index('Year', inplace=True)
 
-df = pd.read_excel(r'C:\Users\issaktop\OneDrive - Fortum\Documents\Python\ALL\LT Hedging\input_df.xlsx',
-                   sheet_name='inputs')
-df = df.astype(float)
+margins, df = import_inputs(r'C:\Users\issaktop\OneDrive - Fortum\Documents\Python\ALL\LT Hedging\input_df.xlsx')
+emps = modify_emps(emps, 0.4, 0.4, 0.2, 1.06)
+smfc = modify_smfc(smfc, [0.4, 0.4, 0.2])
 
-emps = modify_emps(emps)
-smfc = modify_smfc(smfc)
+#%% Filling the df 
 
-#%%
-
-# Filling the df 
 for year in range(1, len(df)):
     prev_year = year - 1
     taxrate = 0.2
-    div_payout = 0.75
+    div_payout = inputs.loc[2023, 'LtHr']
     df.iloc[year, df.columns.get_loc('Maintenance')] = df.iloc[prev_year]['Maintenance'] * (1 + df.iloc[prev_year]['Inflation']) + (df.iloc[prev_year]['Growth'] * 0.032)    
     df['Capex'] = df['Maintenance'] + df['Growth']
     df.loc[year, 'Electricity generation (TWh)'] = df.loc[prev_year, 'Electricity generation (TWh)'] - df.loc[prev_year, 'Growth'] / 385
@@ -242,45 +257,49 @@ for year in range(1, len(df)):
     df.loc[year, 'Dividend per share (€)'] = df.loc[year, 'Dividends'] / df.loc[year, 'Shares']
     df.loc[year, 'ND/EBITDA'] = df.loc[year, 'Financial net debt'] / df.loc[year, 'EBITDA']
     df.loc[year, 'FFO/ND'] = df.loc[year, 'FFO'] / df.loc[year, 'Financial net debt']
-
-
-
-
+    
+df.set_index('Year', inplace=True)
+df.index = df.index.astype(int)
 
 #%%
 
 # User-specified values for price and hedge ratio for these years, CALCULATED IN SEPERATE EXCEL
 user_values = {
-    2023: [56.89, 0.75],
-    2024: [46.77, 0.75],
-    2025: [42.37, 0.75],  
-    2026: [43.04, 0.75],  
+    2024: [46.49, 0.75],
+    2025: [41.57, 0.75],
+    2026: [37.03, 0.75],  
+    2027: [37.24, 0.75],  
 }
 
-def hedge_price(lthr, smfc, emps, user_values):
-    
+def power_price(lthr:float,
+        smfc:pd.DataFrame(),
+        emps:pd.DataFrame(),
+        user_values:list):
+    """
+    Calculates the achieved power price based on EMPS and SMFC prices. In addition,
+    a dictionary with user-given values works as an input for front years.
+
+    """
     # Unhedged part is EMPS and hedge price is SMFC.
-    inputs['LtHr'] = lthr
     lt_hr = pd.DataFrame(inputs['LtHr'])
-    lt_hr = lt_hr.drop(2022)
-    lt_hr['Unhedged'] = 1 - lthr  
-    
+    lt_hr['LtHr'] = lthr
+    lt_hr['Unhedged'] = 1 - lt_hr['LtHr']  
     lt_hr = lt_hr.reset_index()
     smfc.rename(columns={'Delivery year': 'Year'}, inplace=True)
     lt_hr = lt_hr.merge(smfc, on='Year')
     lt_hr = lt_hr.drop(columns=['FI', 'SE2', 'SE3'])
-    lt_hr.rename(columns={'Weighted Price': 'Price'}, inplace=True)
+    lt_hr.rename(columns={'Weighted Price': 'SMFC'}, inplace=True)
+    
+    # Using values defined in the user_values dict to get the "correct" prices for front years
+    for year, values in user_values.items():
+        lt_hr.loc[lt_hr['Year'] == year, ['SMFC', 'LtHr']] = values
+        
+    for year, values in user_values.items():
+        lt_hr.loc[lt_hr['Year'] == year, 'Unhedged'] = 1 - values[1]
+    
+    lt_hr['Hedge price'] = lt_hr['LtHr'] * lt_hr['SMFC']
     lt_hr.set_index('Year', inplace=True)
     
-    
-    for year, values in user_values.items():
-        lt_hr.loc[lt_hr.index == year, ['Price', 'LtHr']] = values
-        
-    for year, values in user_values.items():
-        lt_hr.loc[lt_hr.index == year, 'Unhedged'] = 1 - values[1]
-    
-    lt_hr['Hedge price'] = lt_hr['LtHr'] * lt_hr['Price']
-        
     emps_multiplied = emps.reset_index()
     emps_multiplied.rename(columns={'Delivery year': 'Year'}, inplace=True)
     emps_multiplied.set_index('Year', inplace=True)
@@ -293,41 +312,48 @@ def hedge_price(lthr, smfc, emps, user_values):
 
     return lt_hr
 
-app = hedge_price(0.2, smfc, emps, user_values)
-
+app = power_price(0.2, smfc, emps, user_values)
 
 #%%
 
-def stats_to_emps(data_frame, percentiles):
-    scen_mean = data_frame.mean(axis=1)
+def stats_to_emps(emps_df:pd.DataFrame,
+                  percentiles:list):
+    """
+    Calculates the mean and given percentiles of EMPS prices.
+
+    """
+    scen_mean = emps_df.mean(axis=1)
     
-    scen_perc = data_frame.quantile(q = percentiles, axis=1)
+    scen_perc = emps_df.quantile(q = percentiles, axis=1)
     scen_perc = scen_perc.T
 
     stats = pd.concat([scen_mean, scen_perc], axis=1)
     stats.columns = ['Mean'] + [f'{int(p*100)}th percentile' for p in percentiles]
     stats = pd.DataFrame(stats)
 
-    data_frame = pd.merge(data_frame, stats, left_index=True, right_index=True)    
-    return data_frame
+    emps_df = pd.merge(emps_df, stats, left_index=True, right_index=True)    
+    return emps_df
 
-
-# Call the function to calculate and merge statistics
 emps = stats_to_emps(emps, percentiles = [0.2, 0.8])
 
 #%%
 
 margins.set_index('Year', inplace=True)
 
-# Function that uses EMPS scenarios and saves results to a new df
-def calculate_ratios(scenarios, model):
+def calculate_ratios(scenarios:pd.DataFrame, model:pd.DataFrame,
+                     prodlist:list, div_payout:float,
+                     hedge_price = str):
+    """
+    Loops through the calculation template and saves the financial ratios per 
+    scenario into a dictionary.
+
+    """
+    
     results = {'Scenario': [], 'Year': [], 'Dividend per share (€)': [], 'ND/EBITDA': [], 'FFO/ND': []}
 
-    
     # Iterate over scenarios
-    for scenario in scenarios.columns:
+    for scenario in scenarios.columns:  
         scenario_prices= scenarios[scenario]
-
         
         # 2022 figures ready
         for year in model.index:
@@ -337,10 +363,9 @@ def calculate_ratios(scenarios, model):
             if year in model.index and year in scenario_prices.index:
                 prev_year = year - 1
                 taxrate = 0.2
-                div_payout = 0.75
                 
                 model['Price (€/MWh)'] = scenario_prices
-                model.loc[2024:2028, 'Electricity generation (TWh)'] = [44.3, 45.5, 45.2, 43.9, 45.2] # B%W
+                model.loc[2024:2028, 'Electricity generation (TWh)'] = prodlist 
                 model['Electricity revenue'] = model['Price (€/MWh)'] * model['Electricity generation (TWh)']
                 model.loc[year, 'Electricity generation (TWh)'] = model.loc[prev_year, 'Electricity generation (TWh)'] - model.loc[prev_year, 'Growth'] / 385
                 model['Electricity revenue'] = model['Electricity generation (TWh)'] * model['Price (€/MWh)']
@@ -380,53 +405,45 @@ def calculate_ratios(scenarios, model):
                 results['Dividend per share (€)'].append(div)
                 results['ND/EBITDA'].append(ndebitda)
                 results['FFO/ND'].append(ffond)
+                results['Hedge price'] = hedge_price
 
-            model.loc[2022, 'Price (€/MWh)'] = 59.9
-            model.loc[2022, 'Electricity revenue'] = model.loc[2022, 'Price (€/MWh)'] * model.loc[2022, 'Electricity generation (TWh)']
-            model.loc[2022, 'Total revenue'] = model.loc[2022, 'Electricity revenue'] + model.loc[2022, 'Other revenue']
-            
     results_df = pd.DataFrame(results)
     return results_df
 
-df.set_index('Year', inplace=True)
-df.index = df.index.astype(int)
-results_df = calculate_ratios(app, df)
-print(results_df)
-results_df.describe()
+prodlist = [46.312, 46.37, 45.301, 46.366, 46.358]
+results_df = calculate_ratios(app, df, prodlist, 0.75, hedgeprice)
+print(results_df.describe())
 
+#%% Running the model with different long-term hedge ratios
 
-#%%
-
-#Running the model with different LT HR's
-percentage_values = [0.1, 0.2, 0.3]
+percentages = [0.1, 0.2, 0.3]
 results_dict = {}
 
 # Loop through the percentage values
-for percentage in percentage_values:
-    app = hedge_price(percentage, smfc, emps, user_values)
-    res = calculate_ratios(app, df)
+for percentage in percentages:
+    app = power_price(percentage, smfc, emps, user_values)
+    results_dict[f'App_{int(percentage*100)}'] = app
+    
+    res = calculate_ratios(app, df, prodlist, 0.75, hedgeprice)
     results_dict[f'Results_{int(percentage*100)}'] = res
 
-# Excels file
-with pd.ExcelWriter('financial_ratios_output.xlsx') as writer:
-    for sheet_name, results_df in results_dict.items():
-        results_df.to_excel(writer, sheet_name=sheet_name, index=True)
-        
-
 #%%
+
+def extract_df(result_dict:dict,
+               df_name:pd.DataFrame):
+    df = results_dict[df_name]
+    return df
 
 def df_filtering(data_frame, scenarios):
     return data_frame[data_frame['Scenario'].isin(scenarios)]
 
-
-results_df_filt = df_filtering(results_df,
-                               scenarios = ['20th percentile', 'Mean', 'Median', '80th percentile'])
-
+results_df_filt = df_filtering(extract_df(results_dict, 'Results_10'),
+                               scenarios = ['20th percentile', 'Mean', '80th percentile'])
 
 def generate_plots(data_frame, cols, scenarios):
     for column in cols:
         sns.set(style='whitegrid', context='talk')
-        plt.figure(figsize=(10, 7), dpi=100)
+        plt.figure(figsize=(12, 7), dpi=100)
         sns.lineplot(data=data_frame, x='Year', y=column, hue='Scenario', marker='o',
                      linewidth=2, palette=sns.color_palette("hls", len(scenarios)))
         plt.legend()
@@ -434,14 +451,29 @@ def generate_plots(data_frame, cols, scenarios):
         plt.xlabel('Year')
         plt.ylabel(column)
         plt.grid(True)
+        plt.xticks(data_frame['Year'].unique().astype(int))
+        plt.xticks(rotation=45)
         plt.tight_layout()
         plt.show()
 
-
 generate_plots(results_df_filt,
-               cols = ['ND/EBITDA', 'Dividend per share (€)', 'FFO/ND'],
-               scenarios = ['20th percentile', 'Mean', 'Median', '80th percentile'])
+               cols = ['ND/EBITDA', 'Dividend per share (€)'],
+               scenarios = ['20th percentile', 'Mean', '80th percentile'])
 
+#%% Excels
+
+df = df.dropna()
+
+with pd.ExcelWriter('lt_hedging_outputs.xlsx') as writer:
+    results_df.to_excel(writer, sheet_name='Results', index=True)
+    emps.to_excel(writer, sheet_name='EMPS', index=True)
+    smfc.to_excel(writer, sheet_name='SMFC', index=True)
+    df.to_excel(writer, sheet_name='DF', index=True)
+    
+with pd.ExcelWriter('financial_ratios_output.xlsx') as writer:
+    for sheet_name, results_df in results_dict.items():
+        results_df.to_excel(writer, sheet_name=sheet_name, index=True)
+        
 #%%
 
 plt.figure(figsize=(9,7), dpi=100)
@@ -449,7 +481,8 @@ sns.boxplot(data=results_df, x="Year", y="ND/EBITDA")
 plt.title("Boxplots of ND/EBITDA by Year")
 plt.xlabel("Year")
 plt.ylabel("ND/EBITDA")
-plt.xticks(fontsize=11) 
+plt.xticks(fontsize=11)
+plt.xticks(rotation=45) 
 plt.show()
 
 plt.figure(figsize=(9,7), dpi=100)
@@ -458,14 +491,5 @@ plt.title("Boxplots of Dividend per Share by Year")
 plt.xlabel("Year")
 plt.ylabel("Dividend")
 plt.xticks(fontsize=11) 
+plt.xticks(rotation=45)
 plt.show()
-
-
-
-#%%
-
-with pd.ExcelWriter('lt_hedging_outputs.xlsx') as writer:
-    results_df.to_excel(writer, sheet_name='Results', index=True)
-    emps.to_excel(writer, sheet_name='EMPS', index=True)
-    smfc.to_excel(writer, sheet_name='SMFC', index=True)
-    df.to_excel(writer, sheet_name='DF', index=True)
